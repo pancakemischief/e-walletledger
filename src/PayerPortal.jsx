@@ -1,4 +1,5 @@
 import React, { useState, useRef } from "react";
+import { supabase } from "./supabaseClient";
 import {
   UploadCloud,
   Loader2,
@@ -11,18 +12,27 @@ import {
 /**
  * E-WalletLedger — Mobile-First Payer Upload Portal
  *
- * Flow: upload -> scanning -> review
- * Drop this component into a mobile-width route. Tailwind + lucide-react required.
+ * Flow: upload -> scanning -> review -> success
+ * Drop this component into a mobile-width route. Tailwind + lucide-react + Supabase required.
  */
-export default function PayerUploadPortal() {
-  const [view, setView] = useState("upload"); // 'upload' | 'scanning' | 'review'
+export default function PayerPortal() {
+  const [view, setView] = useState("upload"); // 'upload' | 'scanning' | 'review' | 'success'
   const [screenshotName, setScreenshotName] = useState(null);
-  const [refNo, setRefNo] = useState("1002 9384 7123");
   const fileInputRef = useRef(null);
+
+  // Extracted / editable transaction fields
+  const [refNo, setRefNo] = useState("100293847123");
+  const [amount] = useState(450.0);
+  const [paymentMethod] = useState("GCash");
+  const [payerName, setPayerName] = useState("Mark");
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
 
   const ORG_NAME = "UP ComSci Council 2026";
   const PAYMENT_TITLE = "Annual Gala Ticket Payment";
-  const AMOUNT = "₱450.00";
+  const AMOUNT_DISPLAY = "₱450.00";
+  const CATEGORY = "Annual Gala Ticket";
 
   const handleFileSelect = (e) => {
     const file = e.target.files?.[0];
@@ -34,36 +44,64 @@ export default function PayerUploadPortal() {
 
   const handleDropzoneClick = () => fileInputRef.current?.click();
 
+  const handleSubmit = async () => {
+    setSubmitError(null);
+    setSubmitting(true);
+
+    const payload = {
+      payer_name: payerName,
+      category: CATEGORY,
+      amount,
+      payment_method: paymentMethod,
+      ref_number: refNo,
+      status: "Pending",
+    };
+
+    const { error } = await supabase.from("transactions").insert([payload]);
+
+    setSubmitting(false);
+
+    if (error) {
+      console.error("Supabase insert error:", error);
+      setSubmitError("Something went wrong. Please try again.");
+      return;
+    }
+
+    setView("success");
+  };
+
   return (
     <div className="min-h-screen bg-slate-100">
       <div className="max-w-md mx-auto min-h-screen bg-slate-100 flex flex-col">
         {/* Sticky Header */}
-        <header className="sticky top-0 z-10 bg-slate-800 text-white px-5 pt-5 pb-6 shadow-sm">
-          <div className="flex items-center gap-2 mb-3">
-            {view === "review" && (
-              <button
-                onClick={() => setView("upload")}
-                aria-label="Back"
-                className="-ml-1 mr-1 p-1 rounded-full hover:bg-white/10 active:bg-white/20 transition-colors"
-              >
-                <ChevronLeft size={20} />
-              </button>
-            )}
-            <ShieldCheck size={16} className="text-emerald-400 shrink-0" />
-            <span className="text-xs font-medium tracking-wide text-slate-300 truncate">
-              {ORG_NAME}
-            </span>
-          </div>
-          <div className="flex items-end justify-between gap-3">
-            <p className="text-sm text-slate-300 leading-snug">{PAYMENT_TITLE}</p>
-          </div>
-          <p className="text-3xl font-semibold text-white mt-1 tabular-nums">
-            {AMOUNT}
-          </p>
-        </header>
+        {view !== "success" && (
+          <header className="sticky top-0 z-10 bg-slate-800 text-white px-5 pt-5 pb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              {view === "review" && (
+                <button
+                  onClick={() => setView("upload")}
+                  aria-label="Back"
+                  className="-ml-1 mr-1 p-1 rounded-full hover:bg-white/10 active:bg-white/20 transition-colors"
+                >
+                  <ChevronLeft size={20} />
+                </button>
+              )}
+              <ShieldCheck size={16} className="text-emerald-400 shrink-0" />
+              <span className="text-xs font-medium tracking-wide text-slate-300 truncate">
+                {ORG_NAME}
+              </span>
+            </div>
+            <div className="flex items-end justify-between gap-3">
+              <p className="text-sm text-slate-300 leading-snug">{PAYMENT_TITLE}</p>
+            </div>
+            <p className="text-3xl font-semibold text-white mt-1 tabular-nums">
+              {AMOUNT_DISPLAY}
+            </p>
+          </header>
+        )}
 
         {/* Body */}
-        <main className="flex-1 px-5 py-6">
+        <main className="flex-1 px-5 py-6 flex flex-col">
           {view === "upload" && (
             <UploadView
               onPick={handleDropzoneClick}
@@ -80,16 +118,26 @@ export default function PayerUploadPortal() {
             <ReviewView
               refNo={refNo}
               setRefNo={setRefNo}
-              amount={AMOUNT}
+              amount={AMOUNT_DISPLAY}
+              paymentMethod={paymentMethod}
+              payerName={payerName}
+              setPayerName={setPayerName}
+              submitting={submitting}
+              submitError={submitError}
+              onSubmit={handleSubmit}
             />
           )}
+
+          {view === "success" && <SuccessView />}
         </main>
 
-        <footer className="px-5 pb-6 pt-2 text-center">
-          <p className="text-xs text-slate-400">
-            Secured by E-WalletLedger · Your proof is reviewed manually
-          </p>
-        </footer>
+        {view !== "success" && (
+          <footer className="px-5 pb-6 pt-2 text-center">
+            <p className="text-xs text-slate-400">
+              Secured by E-WalletLedger · Your proof is reviewed manually
+            </p>
+          </footer>
+        )}
       </div>
     </div>
   );
@@ -162,7 +210,17 @@ function ScanningView({ screenshotName }) {
   );
 }
 
-function ReviewView({ refNo, setRefNo, amount }) {
+function ReviewView({
+  refNo,
+  setRefNo,
+  amount,
+  paymentMethod,
+  payerName,
+  setPayerName,
+  submitting,
+  submitError,
+  onSubmit,
+}) {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center gap-2">
@@ -175,13 +233,27 @@ function ReviewView({ refNo, setRefNo, amount }) {
       <div className="rounded-2xl bg-white shadow-sm border border-slate-200 divide-y divide-slate-100 overflow-hidden">
         <div className="px-4 py-4">
           <label className="text-xs font-medium text-slate-400">
+            Your Name
+          </label>
+          <input
+            type="text"
+            value={payerName}
+            onChange={(e) => setPayerName(e.target.value)}
+            disabled={submitting}
+            className="mt-1 w-full bg-transparent text-sm font-medium text-slate-800 outline-none border-b border-transparent focus:border-slate-300 pb-1 disabled:opacity-60"
+          />
+        </div>
+
+        <div className="px-4 py-4">
+          <label className="text-xs font-medium text-slate-400">
             Transaction Reference No.
           </label>
           <input
             type="text"
             value={refNo}
             onChange={(e) => setRefNo(e.target.value)}
-            className="mt-1 w-full bg-transparent text-sm font-medium text-slate-800 tabular-nums outline-none border-b border-transparent focus:border-slate-300 pb-1"
+            disabled={submitting}
+            className="mt-1 w-full bg-transparent text-sm font-medium text-slate-800 tabular-nums outline-none border-b border-transparent focus:border-slate-300 pb-1 disabled:opacity-60"
           />
         </div>
 
@@ -195,7 +267,7 @@ function ReviewView({ refNo, setRefNo, amount }) {
             </p>
           </div>
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-800 text-white text-[11px] font-medium px-2.5 py-1">
-            GCash
+            {paymentMethod}
           </span>
         </div>
 
@@ -212,9 +284,36 @@ function ReviewView({ refNo, setRefNo, amount }) {
         You can edit it above if the scan got it wrong.
       </p>
 
-      <button className="w-full rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-semibold py-4 shadow-sm transition-colors">
-        Confirm &amp; Send Proof
+      {submitError && (
+        <p className="text-xs font-medium text-red-600 px-1">{submitError}</p>
+      )}
+
+      <button
+        onClick={onSubmit}
+        disabled={submitting}
+        className="w-full rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-emerald-600/60 disabled:cursor-not-allowed text-white text-sm font-semibold py-4 shadow-sm transition-colors flex items-center justify-center gap-2"
+      >
+        {submitting && <Loader2 size={16} className="animate-spin" />}
+        {submitting ? "Submitting..." : "Confirm & Send Proof"}
       </button>
+    </div>
+  );
+}
+
+function SuccessView() {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-5 py-20 text-center">
+      <span className="flex h-24 w-24 items-center justify-center rounded-full bg-emerald-100">
+        <CheckCircle2 size={64} className="text-emerald-600" strokeWidth={1.75} />
+      </span>
+      <div className="px-6">
+        <h2 className="text-lg font-semibold text-slate-800">
+          Payment Proof Submitted!
+        </h2>
+        <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+          The treasurer will review your transaction.
+        </p>
+      </div>
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
   ArrowUp,
   ArrowDown,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { supabase } from "./supabaseClient";
 
 /**
@@ -1144,6 +1145,13 @@ export default function EWalletLedgerDashboard() {
                     )}
                     {copied ? "Copied" : "Copy to Clipboard"}
                   </button>
+                </div>
+
+                <div className="mt-4 flex flex-col items-center">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                    <QRCodeSVG size={150} value={generatedLink} />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">Scan to open Payer Portal</p>
                 </div>
               </div>
             )}

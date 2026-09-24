@@ -424,7 +424,7 @@ export default function EWalletLedgerDashboard() {
     }
 
     const params = new URLSearchParams({ title, category, amount: String(amount) });
-    setGeneratedLink(`${window.location.origin}/?${params.toString()}`);
+    setGeneratedLink(`${window.location.origin}/payer?${params.toString()}`);
     setCollectionError("");
     setCopied(false);
   }
@@ -664,7 +664,7 @@ export default function EWalletLedgerDashboard() {
               <p className="text-[15px] font-semibold tracking-tight text-[#1E2A45]">
                 E-WalletLedger
               </p>
-              <p className="text-xs text-slate-500">UP ComSci Council 2026</p>
+              <p className="text-xs text-slate-500">Universitas Magistrorum 2026</p>
             </div>
           </div>
 

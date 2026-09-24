@@ -16,6 +16,7 @@ import {
   Plus,
   Copy,
   Link2,
+  Trash2,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
@@ -465,6 +466,33 @@ export default function EWalletLedgerDashboard() {
         prev.map((tx) => (tx.id === data.id ? { ...tx, ...data } : tx))
       );
       setSelectedTx((prev) => (prev && prev.id === data.id ? { ...prev, ...data } : prev));
+    }
+    setIsUpdating(false);
+  }
+
+  // Permanently delete the selected transaction from Supabase and the UI
+  async function handleDeleteTransaction() {
+    if (!selectedTx || isUpdating) return;
+    if (!window.confirm("Are you sure you want to permanently delete this record?")) return;
+
+    const targetId = selectedTx.id;
+    setIsUpdating(true);
+
+    // .select() returns the deleted rows, so a delete blocked by RLS (0 rows) is caught
+    const { data, error } = await supabase
+      .from("transactions")
+      .delete()
+      .eq("id", targetId)
+      .select();
+
+    if (error || !data || data.length === 0) {
+      console.error("Failed to delete transaction:", error);
+      window.alert(
+        `Couldn't delete this record. ${error?.message ?? "No row was deleted; check your delete permissions."}`
+      );
+    } else {
+      setTransactions((prev) => prev.filter((tx) => tx.id !== targetId));
+      setSelectedTx(null);
     }
     setIsUpdating(false);
   }
@@ -1014,6 +1042,18 @@ export default function EWalletLedgerDashboard() {
                       Re-upload
                     </button>
                   </div>
+                </div>
+
+                <div className="mt-4 border-t border-slate-100 pt-4">
+                  <button
+                    type="button"
+                    onClick={handleDeleteTransaction}
+                    disabled={isUpdating}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-600" strokeWidth={2.25} />
+                    Delete Record
+                  </button>
                 </div>
               </div>
             )}

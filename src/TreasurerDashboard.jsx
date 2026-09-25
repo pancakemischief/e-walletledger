@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
-  ArrowUpRight,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -134,6 +133,76 @@ function isDuplicateTx(tx, duplicateRefs) {
   return !!tx.ref_number && duplicateRefs.has(tx.ref_number);
 }
 
+const ALERT_CATEGORIES = [
+  { label: "Duplicate Ref No.", severity: "red" },
+  { label: "Amount Mismatch", severity: "orange" },
+  { label: "Unreadable Info", severity: "yellow" },
+  { label: "Wrong Payee", severity: "red" },
+  { label: "Outdated Transaction", severity: "slate" },
+  { label: "Not a Receipt", severity: "yellow" },
+  { label: "Suspicious Edit", severity: "red" },
+];
+
+const STORAGE_KEY_ALERTS = "ewallet_tx_alerts";
+
+function loadSavedAlerts() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_ALERTS);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // ignore
+  }
+  return {
+    "fb81e431-71bf-4c0b-bc0f-54134e30f2a3": "Amount Mismatch",
+    "5cdeef2d-02e5-4d3c-819e-dda3587ed174": "Unreadable Info",
+    "f6d06f06-c18a-4bae-acee-250d4824a628": "Wrong Payee",
+  };
+}
+
+function getTxAlerts(tx, duplicateRefs, customAlerts = {}) {
+  const alerts = new Set();
+  const custom = customAlerts[tx.id];
+
+  if (custom) {
+    alerts.add(custom);
+  }
+
+  // 1. Duplicate Ref No.
+  if (isDuplicateTx(tx, duplicateRefs)) {
+    alerts.add("Duplicate Ref No.");
+  }
+
+  // 2. Amount Mismatch
+  if (
+    hasAmountMismatch(tx) ||
+    (tx.category === "Annual Gala Ticket" && Number(tx.amount) !== 450)
+  ) {
+    alerts.add("Amount Mismatch");
+  }
+
+  // 3. Unreadable Info
+  if (
+    !tx.ref_number ||
+    String(tx.ref_number).trim().length < 8 ||
+    !tx.payer_name ||
+    tx.payer_name.trim().length < 3
+  ) {
+    alerts.add("Unreadable Info");
+  }
+
+  // 4. Outdated Transaction (> 30 days)
+  const txDate = new Date(tx.created_at);
+  if (!Number.isNaN(txDate.getTime())) {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    if (txDate < thirtyDaysAgo) {
+      alerts.add("Outdated Transaction");
+    }
+  }
+
+  return [...alerts];
+}
+
 function SortHeader({ label, columnKey, sortKey, sortDir, onSort, className }) {
   const active = sortKey === columnKey && sortDir !== null;
   const Icon = !active ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
@@ -179,6 +248,25 @@ export default function EWalletLedgerDashboard() {
   const [statusFilter, setStatusFilter] = useState("All");
   // One category value shared by the advanced panel and the column popover
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [customAlerts, setCustomAlerts] = useState(loadSavedAlerts);
+  const [selectedAlertCategory, setSelectedAlertCategory] = useState(null);
+
+  function handleSetAlertCategory(txId, category) {
+    setCustomAlerts((prev) => {
+      const updated = { ...prev };
+      if (!category) {
+        delete updated[txId];
+      } else {
+        updated[txId] = category;
+      }
+      try {
+        localStorage.setItem(STORAGE_KEY_ALERTS, JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
+  }
 
   // Close the panel / popover on outside click or Escape
   useEffect(() => {
@@ -286,7 +374,7 @@ export default function EWalletLedgerDashboard() {
     return [...years].sort((a, b) => b - a);
   }, [transactions]);
 
-  // Unified filtering: main search + advanced panel + inline category filter
+  // Unified filtering: main search + advanced panel + inline category filter + alert category filter
   const filteredRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     const cat = normalize(categoryFilter);
@@ -312,29 +400,73 @@ export default function EWalletLedgerDashboard() {
       }
 
       if (statusFilter !== "All" && tx.status !== statusFilter) return false;
+
+      if (selectedAlertCategory) {
+        const txAlertsList = getTxAlerts(tx, duplicateRefs, customAlerts);
+        if (!txAlertsList.includes(selectedAlertCategory)) {
+          return false;
+        }
+      }
+
       return true;
     });
-  }, [transactions, query, categoryFilter, monthFilter, yearFilter, statusFilter]);
+  }, [
+    transactions,
+    query,
+    categoryFilter,
+    monthFilter,
+    yearFilter,
+    statusFilter,
+    selectedAlertCategory,
+    duplicateRefs,
+    customAlerts,
+  ]);
 
-  // Dynamic KPIs — calculated from the currently filtered rows
-  const { totalRevenue, verifiedCount, flaggedCount } = useMemo(() => {
+  // Filtered summary — for the small text line above the ledger, not full KPI cards
+  const { totalRevenue, verifiedCount } = useMemo(() => {
     let revenue = 0;
     let verified = 0;
-    let flagged = 0;
     for (const tx of filteredRows) {
       if (tx.status === "Verified") {
         revenue += Number(tx.amount) || 0;
         verified += 1;
-      } else if (tx.status === "Flagged" || tx.status === "Pending") {
-        flagged += 1;
       }
     }
-    return { totalRevenue: revenue, verifiedCount: verified, flaggedCount: flagged };
+    return { totalRevenue: revenue, verifiedCount: verified };
   }, [filteredRows]);
 
-  const matchRate = filteredRows.length
-    ? Math.round((verifiedCount / filteredRows.length) * 100)
-    : 0;
+  // Audit Action Center — always reflects everything needing action,
+  // independent of the ledger's current search/filter/sort so nothing gets hidden.
+  const { pendingCount, flaggedOnlyCount } = useMemo(() => {
+    let pending = 0;
+    let flagged = 0;
+    for (const tx of transactions) {
+      if (tx.status === "Pending") pending += 1;
+      else if (tx.status === "Flagged") flagged += 1;
+    }
+    return { pendingCount: pending, flaggedOnlyCount: flagged };
+  }, [transactions]);
+
+  // Alert tags with dynamic counts evaluated against transactions
+  const alertTags = useMemo(() => {
+    return ALERT_CATEGORIES.map((cat) => {
+      const count = transactions.filter((tx) =>
+        getTxAlerts(tx, duplicateRefs, customAlerts).includes(cat.label)
+      ).length;
+      return {
+        label: cat.label,
+        count,
+        severity: cat.severity,
+      };
+    });
+  }, [transactions, duplicateRefs, customAlerts]);
+
+  const ALERT_TAG_CLASSES = {
+    red: "bg-red-50 text-red-700 ring-1 ring-red-600/15",
+    orange: "bg-orange-50 text-orange-700 ring-1 ring-orange-600/15",
+    yellow: "bg-yellow-50 text-yellow-800 ring-1 ring-yellow-600/15",
+    slate: "bg-slate-100 text-slate-600 ring-1 ring-slate-500/10",
+  };
 
   // Sorting (null = original order from the database, newest first)
   const visibleRows = useMemo(() => {
@@ -376,7 +508,8 @@ export default function EWalletLedgerDashboard() {
     (monthFilter !== "" ? 1 : 0) +
     (yearFilter !== "" ? 1 : 0) +
     (categoryFilter.trim() !== "" ? 1 : 0) +
-    (statusFilter !== "All" ? 1 : 0);
+    (statusFilter !== "All" ? 1 : 0) +
+    (selectedAlertCategory ? 1 : 0);
 
   const hasActiveFilters = activeFilterCount > 0 || query.trim() !== "";
 
@@ -387,6 +520,7 @@ export default function EWalletLedgerDashboard() {
     setYearFilter("");
     setStatusFilter("All");
     setCategoryFilter("");
+    setSelectedAlertCategory(null);
   }
 
   // ---- New Collection link generator ----
@@ -424,7 +558,7 @@ export default function EWalletLedgerDashboard() {
     }
 
     const params = new URLSearchParams({ title, category, amount: String(amount) });
-    setGeneratedLink(`${window.location.origin}/payer?${params.toString()}`);
+    setGeneratedLink(`${window.location.origin}/?${params.toString()}`);
     setCollectionError("");
     setCopied(false);
   }
@@ -466,6 +600,11 @@ export default function EWalletLedgerDashboard() {
         prev.map((tx) => (tx.id === data.id ? { ...tx, ...data } : tx))
       );
       setSelectedTx((prev) => (prev && prev.id === data.id ? { ...prev, ...data } : prev));
+      if (newStatus === "Verified") {
+        handleSetAlertCategory(selectedTx.id, "");
+      } else if (newStatus === "Flagged" && !customAlerts[selectedTx.id]) {
+        handleSetAlertCategory(selectedTx.id, selectedAlertCategory || "Suspicious Edit");
+      }
     }
     setIsUpdating(false);
   }
@@ -664,7 +803,7 @@ export default function EWalletLedgerDashboard() {
               <p className="text-[15px] font-semibold tracking-tight text-[#1E2A45]">
                 E-WalletLedger
               </p>
-              <p className="text-xs text-slate-500">Universitas Magistrorum 2026</p>
+              <p className="text-xs text-slate-500">UP ComSci Council 2026</p>
             </div>
           </div>
 
@@ -729,50 +868,105 @@ export default function EWalletLedgerDashboard() {
           </div>
         )}
 
-        {/* KPI Summary Cards */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm text-slate-500">Total Revenue Collected</p>
-            <div className="mt-2 flex items-end justify-between">
-              <p className="text-3xl font-semibold tracking-tight text-[#1E2A45]">
-                {peso(totalRevenue)}
-              </p>
-              <span className="flex items-center gap-0.5 rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
-                <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.5} />
-                {verifiedCount} paid
-              </span>
+        {/* Audit Action Center — full-width, action-oriented in place of vanity KPI cards */}
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-700" strokeWidth={2.25} />
+              <h2 className="text-sm font-semibold text-amber-900">Audit Action Center</h2>
             </div>
-            <p className="mt-1 text-xs text-slate-400">from verified receipts</p>
+            {selectedAlertCategory && (
+              <button
+                type="button"
+                onClick={() => setSelectedAlertCategory(null)}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 transition-colors shadow-2xs"
+              >
+                <RotateCcw className="h-3 w-3" strokeWidth={2.25} />
+                Reset alert filter
+              </button>
+            )}
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm text-slate-500">Verified Receipts</p>
-            <div className="mt-2 flex items-end justify-between">
-              <p className="text-3xl font-semibold tracking-tight text-[#1E2A45]">
-                {verifiedCount}
-              </p>
-              <span className="flex items-center gap-0.5 rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" strokeWidth={2.25} />
-                {matchRate}% verified
-              </span>
+          <div className="mt-4 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            {/* Left: the two headline numbers */}
+            <div className="flex shrink-0 items-center gap-6 sm:gap-8">
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter((prev) => (prev === "Pending" ? "All" : "Pending"))
+                }
+                title="Filter by Pending Review"
+                className={`text-left p-1.5 rounded-xl transition-all cursor-pointer ${
+                  statusFilter === "Pending"
+                    ? "bg-amber-200/80 ring-2 ring-amber-600/40"
+                    : "hover:bg-amber-100/60"
+                }`}
+              >
+                <p className="text-3xl font-semibold tracking-tight text-amber-900">
+                  {pendingCount}
+                </p>
+                <p className="mt-0.5 text-xs font-medium text-amber-700/80">Pending Review</p>
+              </button>
+              <div className="h-10 w-px bg-amber-200" />
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter((prev) => (prev === "Flagged" ? "All" : "Flagged"))
+                }
+                title="Filter by Flagged Alerts"
+                className={`text-left p-1.5 rounded-xl transition-all cursor-pointer ${
+                  statusFilter === "Flagged"
+                    ? "bg-amber-200/80 ring-2 ring-amber-600/40"
+                    : "hover:bg-amber-100/60"
+                }`}
+              >
+                <p className="text-3xl font-semibold tracking-tight text-amber-900">
+                  {flaggedOnlyCount}
+                </p>
+                <p className="mt-0.5 text-xs font-medium text-amber-700/80">Flagged Alerts</p>
+              </button>
             </div>
-            <p className="mt-1 text-xs text-slate-400">
-              of {filteredRows.length} {hasActiveFilters ? "filtered" : "total"} receipts
-            </p>
-          </div>
 
-          <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5">
-            <p className="text-sm text-amber-800">Flagged for Review</p>
-            <div className="mt-2 flex items-end justify-between">
-              <p className="text-3xl font-semibold tracking-tight text-amber-900">
-                {flaggedCount}
-              </p>
-              <span className="flex items-center gap-0.5 rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
-                <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.25} />
-                pending alerts
-              </span>
+            {/* Right: alert tag cluster */}
+            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              {alertTags.map((tag) => {
+                const isSelected = selectedAlertCategory === tag.label;
+                return (
+                  <button
+                    key={tag.label}
+                    type="button"
+                    onClick={() =>
+                      setSelectedAlertCategory((prev) =>
+                        prev === tag.label ? null : tag.label
+                      )
+                    }
+                    aria-pressed={isSelected}
+                    title={
+                      isSelected
+                        ? `Clear "${tag.label}" filter`
+                        : `Filter ledger by "${tag.label}" (${tag.count} records)`
+                    }
+                    className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-all ${
+                      isSelected
+                        ? "bg-[#1E2A45] text-white shadow-sm ring-2 ring-[#1E2A45] ring-offset-1"
+                        : `${ALERT_TAG_CLASSES[tag.severity]} hover:ring-2 hover:ring-slate-400/30 hover:scale-[1.02] active:scale-[0.98]`
+                    }`}
+                  >
+                    <span>{tag.label}</span>
+                    <span
+                      className={`inline-flex items-center justify-center rounded-full px-1.5 py-0.2 text-[10px] font-bold ${
+                        isSelected
+                          ? "bg-white/25 text-white"
+                          : "bg-black/10 text-inherit"
+                      }`}
+                    >
+                      {tag.count}
+                    </span>
+                    {isSelected && <X className="h-3 w-3 stroke-[2.5]" />}
+                  </button>
+                );
+              })}
             </div>
-            <p className="mt-1 text-xs text-amber-700/80">needs treasurer action</p>
           </div>
         </section>
 
@@ -785,13 +979,34 @@ export default function EWalletLedgerDashboard() {
                 <h2 className="text-sm font-semibold text-[#1E2A45]">
                   Transaction Ledger
                 </h2>
-                <p className="text-xs text-slate-500">
-                  Select a row to open its audit review
+                <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-slate-500">
+                    Select a row to open its audit review
+                  </p>
+                  {selectedAlertCategory && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#1E2A45] px-2.5 py-0.5 text-xs font-medium text-white shadow-xs">
+                      Alert: {selectedAlertCategory}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAlertCategory(null)}
+                        className="rounded-full p-0.5 hover:bg-white/20 transition-colors cursor-pointer"
+                        aria-label="Remove alert filter"
+                      >
+                        <X className="h-3 w-3 stroke-[2.5]" />
+                      </button>
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-medium text-slate-500">
+                  Filtered Total: {peso(totalRevenue)}{" "}
+                  <span className="text-slate-300">|</span> {verifiedCount} Verified
+                </p>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  {visibleRows.length} of {transactions.length} shown
                 </p>
               </div>
-              <span className="text-xs text-slate-400">
-                {visibleRows.length} of {transactions.length} shown
-              </span>
             </div>
 
             <div className={`overflow-x-auto ${showCategoryFilter ? "min-h-[10rem]" : ""}`}>
@@ -866,14 +1081,24 @@ export default function EWalletLedgerDashboard() {
                   ) : visibleRows.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-400">
-                        {transactions.length === 0
-                          ? "No transactions yet."
-                          : "No transactions match your filters."}
-                        {transactions.length > 0 && hasActiveFilters && (
+                        {selectedAlertCategory ? (
+                          <span>
+                            No transactions found under the{" "}
+                            <span className="font-semibold text-slate-700">
+                              "{selectedAlertCategory}"
+                            </span>{" "}
+                            alert category.
+                          </span>
+                        ) : transactions.length === 0 ? (
+                          "No transactions yet."
+                        ) : (
+                          "No transactions match your filters."
+                        )}
+                        {hasActiveFilters && (
                           <button
                             type="button"
                             onClick={resetFilters}
-                            className="ml-2 font-medium text-[#1E2A45] underline underline-offset-2"
+                            className="ml-2 font-medium text-[#1E2A45] underline underline-offset-2 cursor-pointer"
                           >
                             Clear filters
                           </button>
@@ -883,6 +1108,7 @@ export default function EWalletLedgerDashboard() {
                   ) : (
                     visibleRows.map((row) => {
                       const isSelected = row.id === selectedTx?.id;
+                      const rowAlerts = getTxAlerts(row, duplicateRefs, customAlerts);
                       return (
                         <tr
                           key={row.id}
@@ -897,7 +1123,18 @@ export default function EWalletLedgerDashboard() {
                             {formatDate(row.created_at)}
                           </td>
                           <td className="whitespace-nowrap px-3 py-3.5 font-medium text-[#1E2A45]">
-                            {row.payer_name}
+                            <div className="flex items-center gap-1.5">
+                              <span>{row.payer_name}</span>
+                              {rowAlerts.length > 0 && (
+                                <span
+                                  title={`Alerts: ${rowAlerts.join(", ")}`}
+                                  className="inline-flex cursor-default items-center rounded-full bg-amber-100 px-1.5 py-0.2 text-[10px] font-semibold text-amber-800"
+                                >
+                                  {rowAlerts[0]}
+                                  {rowAlerts.length > 1 && ` +${rowAlerts.length - 1}`}
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="whitespace-nowrap px-3 py-3.5 text-slate-600">
                             {row.category}
@@ -1012,6 +1249,37 @@ export default function EWalletLedgerDashboard() {
                       Matches ref no. already recorded this term
                     </p>
                   )}
+                </div>
+
+                {/* Alert Category Assignment in Review Drawer */}
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-1 text-xs font-semibold text-slate-700">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600" strokeWidth={2.25} />
+                      Alert Category
+                    </label>
+                    {customAlerts[selectedTx.id] && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetAlertCategory(selectedTx.id, "")}
+                        className="text-[11px] text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                      >
+                        Reset Alert
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    value={customAlerts[selectedTx.id] || (getTxAlerts(selectedTx, duplicateRefs, customAlerts)[0] || "")}
+                    onChange={(e) => handleSetAlertCategory(selectedTx.id, e.target.value)}
+                    className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-[#1E2A45] focus:border-[#1E2A45] focus:outline-none"
+                  >
+                    <option value="">None / Normal</option>
+                    {ALERT_CATEGORIES.map((cat) => (
+                      <option key={cat.label} value={cat.label}>
+                        {cat.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Action buttons */}

@@ -1,0 +1,8 @@
+{
+  "name": "E-WalletLedger",
+  "description": "Treasurer admin dashboard and payer upload portal for e-wallet payment verification and ledger tracking.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

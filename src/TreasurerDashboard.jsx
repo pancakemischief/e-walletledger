@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
   Filter,
   Plus,
+  Flag,
   Copy,
   Link2,
   Trash2,
@@ -1306,8 +1307,8 @@ export default function EWalletLedgerDashboard() {
                       disabled={isUpdating || selectedTx.status === "Flagged"}
                       className="flex items-center justify-center gap-1.5 rounded-lg border border-amber-400 py-2.5 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <RotateCcw className="h-4 w-4" strokeWidth={2.25} />
-                      Re-upload
+                      <Flag className="h-4 w-4" strokeWidth={2.25} />
+                      Flag
                     </button>
                   </div>
                 </div>
